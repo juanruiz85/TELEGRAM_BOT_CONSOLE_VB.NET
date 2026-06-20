@@ -1,144 +1,140 @@
-﻿Imports System.IO
-Imports System.Text
-Imports System.Timers
+Imports System.IO
+Imports System.Threading
+Imports System.Threading.Tasks
 Imports Telegram.Bot
-Imports Telegram.Bot.Args
 Imports Telegram.Bot.Types
 Imports Telegram.Bot.Types.Enums
 Imports Telegram.Bot.Types.ReplyMarkups
 
 Module Module1
 
-    Dim bott As Telegram.Bot.TelegramBotClient
-    Sub initbot()
-        Dim YourBotTokenHere = "TU TOKEN AQUI"
-        bott = New Telegram.Bot.TelegramBotClient(YourBotTokenHere)
+    Private bott As TelegramBotClient
 
-        AddHandler bott.OnUpdate, AddressOf OnUpdate
-        AddHandler bott.OnMessage, AddressOf OnMessageReceived
-        AddHandler bott.OnMessageEdited, AddressOf OnMessageEdited
-        AddHandler bott.OnCallbackQuery, AddressOf OnCallbackQuery
-        AddHandler bott.OnInlineQuery, AddressOf BotOnInlineQueryReceived
-        AddHandler bott.OnInlineResultChosen, AddressOf BotOnChosenInlineResultReceived
-        AddHandler bott.OnReceiveError, AddressOf BotOnReceiveError
-
-        If Not bott.IsReceiving Then
-            bott.StartReceiving()
+    Sub Main()
+        Dim token = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN")
+        If String.IsNullOrWhiteSpace(token) Then
+            token = "TU TOKEN AQUI"
         End If
+
+        bott = New TelegramBotClient(token)
 
         Console.WriteLine("Bot Iniciado")
 
-    End Sub
+        Dim cts = New CancellationTokenSource()
+        Dim receiveTask = ProcessUpdatesAsync(cts.Token)
 
-    Sub Main()
-        'Fuente del codigo https://codejournalweb.wordpress.com/2018/02/15/vb-net-receive-telegram-messages/
-        initbot()
+        Console.WriteLine("Presiona ENTER para detener el bot...")
         Console.ReadLine()
+
+        cts.Cancel()
+        Try
+            receiveTask.GetAwaiter().GetResult()
+        Catch ex As OperationCanceledException
+            Console.WriteLine("Recepción detenida.")
+        End Try
     End Sub
 
+    Private Async Function ProcessUpdatesAsync(cancellationToken As CancellationToken) As Task
+        Dim offset As Integer? = Nothing
 
-    Private Sub BotOnReceiveError(sender As Object, e As ReceiveErrorEventArgs)
-        Console.WriteLine("BotOnReceiveError")
-    End Sub
+        While Not cancellationToken.IsCancellationRequested
+            Dim updates = Await bott.GetUpdatesAsync(offset, limit:=Nothing, timeout:=30, allowedUpdates:=Nothing, cancellationToken:=cancellationToken)
+            If updates Is Nothing OrElse updates.Count = 0 Then
+                Continue While
+            End If
 
-    Private Sub BotOnChosenInlineResultReceived(sender As Object, e As ChosenInlineResultEventArgs)
-        Console.WriteLine("BotOnChosenInlineResultReceived")
-    End Sub
+            For Each update In updates
+                Try
+                    Await ProcessUpdateAsync(update)
+                Catch ex As Exception
+                    Console.WriteLine($"Error procesando update: {ex}")
+                End Try
 
-    Private Sub BotOnInlineQueryReceived(sender As Object, e As InlineQueryEventArgs)
-        Console.WriteLine("BotOnInlineQueryReceived")
-    End Sub
+                offset = update.Id + 1
+            Next
+        End While
+    End Function
 
-    Private Sub OnCallbackQuery(sender As Object, e As CallbackQueryEventArgs)
-        Console.WriteLine("OnCallbackQuery")
-    End Sub
+    Private Async Function ProcessUpdateAsync(update As Update) As Task
+        If update.Message IsNot Nothing Then
+            Await HandleMessageAsync(update.Message)
+            Return
+        End If
 
-    Private Sub OnMessageEdited(sender As Object, e As MessageEventArgs)
-        Console.WriteLine(e.Message.Text)
-    End Sub
+        If update.CallbackQuery IsNot Nothing Then
+            Console.WriteLine("CallbackQuery recibido")
+            Await sendMessage(update.CallbackQuery.Message.Chat.Id.ToString(), "Callback recibido")
+            Return
+        End If
 
-    Private Sub OnUpdate(sender As Object, e As UpdateEventArgs)
-        Console.WriteLine("OnUpdate")
-    End Sub
+        If update.InlineQuery IsNot Nothing Then
+            Console.WriteLine("InlineQuery recibido")
+            Return
+        End If
 
-    Private Async Sub OnMessageReceived(sender As Object, e As MessageEventArgs)
-        Dim te As String = e.Message.From.Id.ToString & " " & 'Aqui obtenemos los datos del mensaje para despues mostrarlos
-                            e.Message.From.FirstName & " " &
-                            e.Message.From.Id & " " &
-                            e.Message.From.IsBot & " " &
-                            e.Message.From.LastName & " " & e.Message.From.Username
+        If update.ChosenInlineResult IsNot Nothing Then
+            Console.WriteLine("ChosenInlineResult recibido")
+            Return
+        End If
+    End Function
 
-        Dim ID As String = e.Message.From.Id.ToString ' aqui se obtiene el id de quien envia el mensaje
+    Private Async Function HandleMessageAsync(message As Message) As Task
+        Dim messageText As String = If(String.IsNullOrWhiteSpace(message.Text), "<no text>", message.Text)
+        Dim chatId As String = message.Chat.Id.ToString()
 
-        If e.Message.Type.Equals(Types.Enums.MessageType.Text) Then
-            Select Case e.Message.Text
-                Case "/now" 'reponde con la fecha y hora
-                    Await sendMessage(ID, "es:  " & Now.ToString)
-
-                Case "/myid" 'te envia tu nombre y tu id
-                    Await sendMessage(ID, e.Message.From.FirstName & " Codigo: " & e.Message.From.Id.ToString)
-
+        If message.Type = MessageType.Text Then
+            Select Case messageText.Trim().ToLowerInvariant()
+                Case "/now"
+                    Await sendMessage(chatId, $"es: {Now}")
+                Case "/myid"
+                    Await sendMessage(chatId, $"{message.From.FirstName} Codigo: {message.From.Id}")
                 Case "/botones"
-                    Dim bt1 As InlineKeyboardButton = New InlineKeyboardButton With {
-                        .Text = "Test 1",
-                        .CallbackData = "bt1"
-                        }
-                    Dim bt2 As InlineKeyboardButton = New InlineKeyboardButton With {
-                    .Text = "Test 2",
-                    .CallbackData = "bt2"
-                    }
-                    Dim bt3 As InlineKeyboardButton = New InlineKeyboardButton With {
-                    .Text = "Test 3",
-                    .CallbackData = "bt3"
-                    }
-                    Dim bt4 As InlineKeyboardButton = New InlineKeyboardButton With {
-                    .Text = "Test 4",
-                    .CallbackData = "bt4"
-                    }
+                    Dim bt1 As InlineKeyboardButton = InlineKeyboardButton.WithCallbackData("Test 1", "bt1")
+                    Dim bt2 As InlineKeyboardButton = InlineKeyboardButton.WithCallbackData("Test 2", "bt2")
+                    Dim bt3 As InlineKeyboardButton = InlineKeyboardButton.WithCallbackData("Test 3", "bt3")
+                    Dim bt4 As InlineKeyboardButton = InlineKeyboardButton.WithCallbackData("Test 4", "bt4")
 
-                    'Cuando son 3 botones o menos usar esto
-                    'Dim teclado As InlineKeyboardMarkup = New InlineKeyboardMarkup({bt2, bt3, bt4, bt5})
-
-                    'Para varios botones usaremos esto.
                     Dim teclado As InlineKeyboardMarkup = New InlineKeyboardButton()() {
-                    New InlineKeyboardButton() {bt1},
-                    New InlineKeyboardButton() {bt1, bt2},
-                    New InlineKeyboardButton() {bt1, bt2, bt3},
-                    New InlineKeyboardButton() {bt1, bt2, bt3, bt4}
+                        New InlineKeyboardButton() {bt1},
+                        New InlineKeyboardButton() {bt1, bt2},
+                        New InlineKeyboardButton() {bt1, bt2, bt3},
+                        New InlineKeyboardButton() {bt1, bt2, bt3, bt4}
                     }
-                    Try
-                        Await bott.SendTextMessageAsync(ID, "Elije una accion " & e.Message.From.FirstName, replyMarkup:=teclado)
-                    Catch ex As Exception
-                        Console.WriteLine(ex.ToString)
-                    End Try
 
+                    Try
+                        Await bott.SendTextMessageAsync(chatId, $"Elije una accion {message.From.FirstName}", replyMarkup:=teclado)
+                    Catch ex As Exception
+                        Console.WriteLine(ex.ToString())
+                    End Try
+                Case Else
+                    Await sendMessage(chatId, "Comando no reconocido. Usa /now, /myid o /botones")
             End Select
-            log(e.Message.Text & " ==> " & te)
+
+            log($"{messageText} ==> {message.From.Id} {message.From.FirstName} {message.From.LastName} {message.From.Username}")
         Else
             Dim t = "Lo siento, no soporto este tipo de mensaje!"
-            log(e.Message.Text & " ==> " & te)
-            Await sendMessage(ID, t)
+            log($"{messageText} ==> {message.From.Id} {message.From.FirstName} {message.From.LastName} {message.From.Username}")
+            Await sendMessage(chatId, t)
         End If
-    End Sub
+    End Function
 
-    Public Async Function sendMessage(ByVal destID As String, ByVal text As String) As Task
+    Public Async Function sendMessage(destID As String, text As String) As Task
         Try
-            Await bott.SendTextMessageAsync(destID, text, Telegram.Bot.Types.Enums.ParseMode.Markdown, False, False, 0, Nothing)
+            Await bott.SendTextMessageAsync(destID, text, parseMode:=ParseMode.Markdown)
         Catch ex As Exception
-            Console.WriteLine(ex.ToString)
+            Console.WriteLine(ex.ToString())
         End Try
     End Function
 
     Private Sub log(txt As String)
-        Dim s = Now.ToString & " -- " & txt & vbCrLf
+        Dim s = $"{Now} -- {txt}" & vbCrLf
         Console.WriteLine(s)
-        Dim folder As String = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)
-        folder = If(folder.EndsWith("\"), folder, folder & "\") & "IsNotifier\Log\" 'Guarda el log en C:\ProgramData\IsNotifier\Log\
+        Dim folder As String = Path.Combine(AppContext.BaseDirectory, "Logs")
         If Not Directory.Exists(folder) Then
             Directory.CreateDirectory(folder)
         End If
-        folder = folder & Now.Month.ToString.PadLeft(2, "0") & Now.Year & ".txt"
-        IO.File.AppendAllText(folder, s)
+        Dim fileName As String = Now.ToString("MMyyyy") & ".txt"
+        Dim filePath As String = Path.Combine(folder, fileName)
+        System.IO.File.AppendAllText(filePath, s)
     End Sub
 End Module
-
